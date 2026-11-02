@@ -1372,8 +1372,14 @@ ensure_linux_libpng12() {
             $SUDO apt-get update >/dev/null 2>&1 || true
             $SUDO apt-get install -y libpng12-0 >/dev/null 2>&1 || true
             ;;
-        arch|manjaro|endeavouros)
-            $SUDO pacman -S --noconfirm libpng12 >/dev/null 2>&1 || true
+        arch|manjaro|endeavouros|cachyos|garuda|artix)
+            # NOTE: plain "pacman -S libpng12" fails on Arch — the package lives in
+            # the AUR (build with e.g. "yay -S libpng12"). Only try pacman when the
+            # repo really provides it; otherwise stage the library from a .deb
+            # below, which works on every distro without root.
+            if pacman -Si libpng12 >/dev/null 2>&1; then
+                $SUDO pacman -S --noconfirm libpng12 >/dev/null 2>&1 || true
+            fi
             ;;
         fedora|rhel|centos|almalinux|rocky)
             local dnf_cmd
@@ -1518,10 +1524,14 @@ setup_mtkclient_requirements() {
     log "Adding user to required groups for MTKClient..."
     
     # Ensure commonly-used USB/serial groups exist and add current user.
-    # Arch/CachyOS often use uucp/lock and may not ship plugdev by default.
-    if ! getent group plugdev >/dev/null 2>&1; then
-        $SUDO groupadd -f plugdev >/dev/null 2>&1 || true
-    fi
+    # Arch/CachyOS often use uucp/lock and may not ship plugdev/dialout by default.
+    # (Arch has no "dialout" group at all — its serial group is "uucp"; creating
+    # the missing groups here keeps the loop below working on every distro.)
+    for grp in plugdev dialout uucp lock; do
+        if ! getent group "$grp" >/dev/null 2>&1; then
+            $SUDO groupadd -f "$grp" >/dev/null 2>&1 || true
+        fi
+    done
     local mtk_groups=("plugdev" "dialout" "uucp" "lock")
     for grp in "${mtk_groups[@]}"; do
         if getent group "$grp" >/dev/null 2>&1; then
@@ -2053,7 +2063,8 @@ show_completion_message() {
     
     echo "If your phone is not detected:"
     echo "  1) Reboot or log out/in once (group and udev changes)"
-    echo "  2) Stop ModemManager and retry"
+    echo "  2) Stop ModemManager and retry (if installed; Arch does not ship it by default):"
+    echo "       sudo systemctl stop ModemManager"
     echo "  3) Use a short known-good USB data cable"
     echo
 
