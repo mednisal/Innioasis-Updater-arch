@@ -3687,7 +3687,9 @@ log() {{ echo "[spft-setup] $*"; }}
 RULES_DIR=/etc/udev/rules.d
 SERIAL_GROUP=root
 getent group uucp >/dev/null 2>&1 && SERIAL_GROUP=uucp
-getent group dialout >/dev/null 2>&1 && SERIAL_GROUP=dialout
+# Only fall back to dialout when uucp is absent: Arch has no dialout group, and
+# some Debian-derived systems have both (uucp being the actual ttyACM owner).
+if [ "$SERIAL_GROUP" = root ]; then getent group dialout >/dev/null 2>&1 && SERIAL_GROUP=dialout; fi
 groupadd -f plugdev 2>/dev/null || true
 mkdir -p "$RULES_DIR" 2>/dev/null || true
 cat > "$RULES_DIR/{FLASH_TOOL_LINUX_MM_BLACKLIST_RULE}" << 'EOF' || true
@@ -3714,9 +3716,14 @@ KERNEL=="ttyACM[0-9]*", MODE="0666", TAG+="uaccess"
 KERNEL=="ttyUSB[0-9]*", MODE="0666", TAG+="uaccess"
 EOF
 for grp in plugdev dialout uucp lock; do
-  getent group "$grp" >/dev/null 2>&1 && usermod -aG "$grp" "$TARGET_USER" 2>/dev/null || true
+  getent group "$grp" >/dev/null 2>&1 || groupadd -f "$grp" 2>/dev/null || true
+  usermod -aG "$grp" "$TARGET_USER" 2>/dev/null || true
 done
-command -v systemctl >/dev/null 2>&1 && systemctl stop ModemManager.service 2>/dev/null || true
+# ModemManager is not shipped on every distro (e.g. Arch minimal installs);
+# stop it only when the unit actually exists.
+if systemctl list-unit-files 'ModemManager.service' 2>/dev/null | grep -q ModemManager; then
+  systemctl stop ModemManager.service 2>/dev/null || true
+fi
 # sudo udevadm control --reload-rules && sudo udevadm trigger
 command -v udevadm >/dev/null 2>&1 && udevadm control --reload-rules 2>/dev/null; udevadm trigger 2>/dev/null || true
 log "OK: embedded fallback prep finished for $TARGET_USER (includes 99-ttyacms.rules)"
@@ -3976,7 +3983,7 @@ def linux_spflash_serial_groups_status():
     if not is_linux_platform():
         return result
     candidates = []
-    for name in ("dialout", "uucp", "plugdev", "lock"):
+    for name in ("uucp", "dialout", "plugdev", "lock"):
         try:
             import grp
             grp.getgrnam(name)
@@ -3986,10 +3993,11 @@ def linux_spflash_serial_groups_status():
     result["exists"] = candidates
     session = _linux_user_groups()
     result["session"] = sorted(session)
-    # Distro default preference
-    if _linux_is_arch_family():
-        preferred = ["uucp", "dialout", "plugdev", "lock"]
-    else:
+    # Distro default preference. Arch has no dialout group at all (serial devices
+    # belong to uucp), so always probe uucp first; dialout only wins on non-Arch
+    # systems where uucp does not exist.
+    preferred = ["uucp", "dialout", "plugdev", "lock"]
+    if not _linux_is_arch_family():
         preferred = ["dialout", "uucp", "plugdev", "lock"]
     recommended = None
     for name in preferred:
